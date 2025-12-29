@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const Course = require("./models/courses");
 const User = require("./models/user");
 const cors = require("cors");
+const bodyParser = require("body-parser");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
@@ -12,55 +13,34 @@ const app = express();
 const router = express.Router();
 const secret = process.env.JWT_SECRET;
 
-const allowedOrigins = [
-  "http://127.0.0.1:5500",
-  "http://localhost:5500",
-  "https://engelken-course-manager.netlify.app",
-];
-
-const corsOptions = {
-  origin: allowedOrigins, // cors package handles the array correctly
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "x-auth"],
-  credentials: false,
-  optionsSuccessStatus: 204,
-};
-
-app.use(cors(corsOptions));
-
-// Some setups still need explicit OPTIONS passthrough without using app.options('*')
-app.use((req, res, next) => {
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-// ----- Middleware -----
-app.use(express.json());
-
-// ----- Mongo -----
+// Connect to MongoDB
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
   .then(() => console.log("MongoDB connected!"))
   .catch((err) => {
     console.error("MongoDB connection error:", err);
     process.exit(1);
   });
 
-// ----- Routes -----
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(bodyParser.json());
 
-// Health check (optional but SUPER helpful on Render)
-router.get("/health", (req, res) => res.json({ ok: true }));
-
-// Get all courses (auth required)
+// Routes
+// Get all courses
 router.get("/courses", authenticateToken, async (req, res) => {
   try {
     const { enrolled, owner, search } = req.query;
-    const query = {};
+    let query = {};
 
     if (enrolled === "true") {
       query.enrolledUsers = req.user._id;
     } else if (owner) {
-      if (!/^[0-9a-fA-F]{24}$/.test(owner)) {
+      if (!owner || owner === "undefined" || !/^[0-9a-fA-F]{24}$/.test(owner)) {
         return res.status(400).json({ error: "Invalid owner ID" });
       }
       query.owner = owner;
@@ -76,71 +56,93 @@ router.get("/courses", authenticateToken, async (req, res) => {
     const courses = await Course.find(query);
     res.json(courses);
   } catch (err) {
-    console.error("GET /courses error:", err);
+    console.error(err);
     res.status(500).json({ error: "Failed to fetch courses" });
   }
 });
 
-// Create new user (register)
+// Create new user
 router.post("/users", async (req, res) => {
+  if (!req.body.username || !req.body.password || !req.body.role) {
+    return res
+      .status(400)
+      .json({ error: "Missing username, password, or role" });
+  }
+
+  const allowedRoles = ["student", "teacher"];
+  const role = allowedRoles.includes(req.body.role) ? req.body.role : "student";
+
+  const newUser = new User({
+    username: req.body.username,
+    password: req.body.password,
+    role,
+  });
+
   try {
-    const { username, password, role } = req.body || {};
-    if (!username || !password || !role) {
-      return res
-        .status(400)
-        .json({ error: "Missing username, password, or role" });
-    }
-
-    const allowedRoles = ["student", "teacher"];
-    const safeRole = allowedRoles.includes(role) ? role : "student";
-
-    const newUser = new User({ username, password, role: safeRole });
     await newUser.save();
-
-    return res.status(201).json({ message: "User created" });
+    res.sendStatus(201);
   } catch (err) {
-    console.error("POST /users error:", err);
-    // common: duplicate username
-    if (err?.code === 11000) {
-      return res.status(409).json({ error: "Username already exists" });
-    }
-    return res.status(500).json({ error: "Failed to create user" });
+    console.error("User creation error:", err); // <— Add this
+    res
+      .status(500)
+      .json({ error: "Failed to create user", details: err.message });
   }
 });
+router.post("/users", async (req, res) => {
+  if (!req.body.username || !req.body.password || !req.body.role) {
+    return res
+      .status(400)
+      .json({ error: "Missing username, password, or role" });
+  }
 
-// Login
-router.post("/auth", async (req, res) => {
+  const allowedRoles = ["student", "teacher"];
+  const role = allowedRoles.includes(req.body.role) ? req.body.role : "student";
+
+  const newUser = new User({
+    username: req.body.username,
+    password: req.body.password,
+    role,
+  });
+
   try {
-    const { username, password } = req.body || {};
-    if (!username || !password) {
-      return res.status(400).json({ error: "Missing username or password" });
-    }
-
-    const user = await User.findOne({ username });
-    if (!user || user.password !== password) {
-      return res.status(401).json({ error: "Invalid username or password" });
-    }
-
-    const token = jwt.sign(
-      { _id: user._id.toString(), username: user.username, role: user.role },
-      secret,
-      { expiresIn: "1h" }
-    );
-
-    res.json({
-      username: user.username,
-      role: user.role,
-      token,
-      _id: user._id,
-      auth: 1,
-    });
+    await newUser.save();
+    res.sendStatus(201);
   } catch (err) {
-    console.error("POST /auth error:", err);
-    res.status(500).json({ error: "Login failed" });
+    console.error("User creation error:", err); // <— Add this
+    res
+      .status(500)
+      .json({ error: "Failed to create user", details: err.message });
   }
 });
 
-// Create course (teacher only)
+// User login
+router.post("/auth", async (req, res) => {
+  if (!req.body.username || !req.body.password) {
+    return res.status(400).json({ error: "Missing username or password" });
+  }
+
+  const user = await User.findOne({ username: req.body.username });
+
+  if (!user || user.password !== req.body.password) {
+    return res.status(401).json({ error: "Invalid username or password" });
+  }
+
+  const token = jwt.sign(
+    { _id: user._id.toString(), username: user.username, role: user.role },
+    secret,
+    { expiresIn: "1h" }
+  );
+
+  res.json({
+    username: user.username,
+    role: user.role,
+    token,
+    _id: user._id,
+    auth: 1,
+  });
+});
+
+// create/update/delete/enroll/drop courses
 router.post(
   "/courses",
   authenticateToken,
@@ -154,87 +156,73 @@ router.post(
       });
       await course.save();
       res.status(201).json(course);
-    } catch (err) {
-      console.error("POST /courses error:", err);
-      res.status(400).json({ message: err.message });
+    } catch (error) {
+      res.status(400).json({ message: error.message });
     }
   }
 );
 
-// Get course by ID
 router.get("/courses/:id", async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
     if (!course) return res.status(404).send("Course not found");
     res.json(course);
   } catch (err) {
-    console.error("GET /courses/:id error:", err);
     res.status(400).send(err);
   }
 });
 
-// Update course (teacher + owner only)
 router.put(
   "/courses/:id",
   authenticateToken,
   authorizeTeachersOnly,
   async (req, res) => {
-    try {
-      const course = await Course.findById(req.params.id);
-      if (!course) return res.status(404).json({ message: "Course not found" });
+    const course = await Course.findById(req.params.id);
+    if (!course) return res.status(404).json({ message: "Course not found" });
 
-      if (course.owner.toString() !== req.user._id.toString()) {
-        return res
-          .status(403)
-          .json({ message: "Not authorized to edit this course" });
-      }
-
-      Object.assign(course, req.body);
-      await course.save();
-      res.json(course);
-    } catch (err) {
-      console.error("PUT /courses/:id error:", err);
-      res.status(400).json({ message: err.message });
+    if (
+      req.user.role !== "teacher" ||
+      course.owner.toString() !== req.user._id.toString()
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to edit this course" });
     }
+
+    Object.assign(course, req.body);
+    await course.save();
+    res.json(course);
   }
 );
 
-// Delete course (teacher + owner only)
 router.delete(
   "/courses/:id",
   authenticateToken,
   authorizeTeachersOnly,
   async (req, res) => {
-    try {
-      const course = await Course.findById(req.params.id);
-      if (!course) return res.status(404).json({ message: "Course not found" });
+    const course = await Course.findById(req.params.id);
+    if (!course) return res.status(404).json({ message: "Course not found" });
 
-      if (course.owner.toString() !== req.user._id.toString()) {
-        return res
-          .status(403)
-          .json({ message: "Not authorized to delete this course" });
-      }
-
-      await course.deleteOne();
-      res.json({ message: "Course deleted" });
-    } catch (err) {
-      console.error("DELETE /courses/:id error:", err);
-      res.status(400).json({ message: err.message });
+    if (
+      req.user.role !== "teacher" ||
+      course.owner.toString() !== req.user._id.toString()
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to delete this course" });
     }
+
+    await course.deleteOne();
+    res.json({ message: "Course deleted" });
   }
 );
 
-// Enroll
 router.post("/courses/:id/enroll", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
     if (!course) return res.status(404).json({ message: "Course not found" });
 
-    if (
-      course.enrolledUsers.some(
-        (id) => id.toString() === req.user._id.toString()
-      )
-    ) {
+    if (course.enrolledUsers.includes(req.user._id)) {
       return res
         .status(400)
         .json({ message: "User already enrolled in this course" });
@@ -243,13 +231,11 @@ router.post("/courses/:id/enroll", authenticateToken, async (req, res) => {
     course.enrolledUsers.push(req.user._id);
     await course.save();
     res.json({ message: "Successfully enrolled in course" });
-  } catch (err) {
-    console.error("POST /courses/:id/enroll error:", err);
-    res.status(400).json({ message: err.message });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
   }
 });
 
-// Drop
 router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
@@ -259,16 +245,16 @@ router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
       (userId) => userId.toString() !== req.user._id.toString()
     );
     await course.save();
-
     res.json({ message: "Successfully dropped the course" });
-  } catch (err) {
-    console.error("POST /courses/:id/drop error:", err);
-    res.status(400).json({ message: err.message });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
   }
 });
 
+// Use router
 app.use("/api", router);
 
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`Server running on http://localhost:${PORT}`)
