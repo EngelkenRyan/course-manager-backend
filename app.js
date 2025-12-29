@@ -14,16 +14,17 @@ const router = express.Router();
 
 const secret = process.env.JWT_SECRET;
 
-// ---------- CORS (MUST be before routes) ----------
+// CORS
 const allowedOrigins = new Set([
   "http://127.0.0.1:5500",
   "http://localhost:5500",
   "http://localhost:3000",
+  "https://engelken-course-manager.netlify.app",
 ]);
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // allow requests with no origin (curl/postman) + allowed origins
+    // allow requests with no origin
     if (!origin || allowedOrigins.has(origin)) return cb(null, true);
     return cb(null, false);
   },
@@ -35,7 +36,6 @@ const corsOptions = {
 // Apply CORS to all requests
 app.use(cors(corsOptions));
 
-// Express 5-safe preflight handler (NO wildcard route patterns)
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     return cors(corsOptions)(req, res, () => res.sendStatus(204));
@@ -45,8 +45,6 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 app.use(bodyParser.json());
-
-// ---------- ROUTES ----------
 
 // Get all courses
 router.get("/courses", authenticateToken, async (req, res) => {
@@ -93,7 +91,7 @@ router.post("/users", async (req, res) => {
 
   const newUser = new User({
     username,
-    password, // NOTE: plaintext is not secure (OK for class project)
+    password,
     role: safeRole,
   });
 
@@ -282,7 +280,6 @@ router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
 
 app.use("/api", router);
 
-// ---------- START ----------
 const PORT = process.env.PORT || 3000;
 
 connectDB()
