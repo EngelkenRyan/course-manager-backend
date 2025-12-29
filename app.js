@@ -13,19 +13,35 @@ const app = express();
 const router = express.Router();
 const secret = process.env.JWT_SECRET;
 
-// === CORS Setup ===
+// Middleware (parse JSON)
+app.use(express.json());
+app.use(bodyParser.json());
+
+// ✅ CORS (MUST be before routes)
 const corsOptions = {
-  origin: [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "https://engelken-course-manager.netlify.app/",
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], // allowed HTTP methods
-  allowedHeaders: ["Content-Type", "Authorization"], // allowed headers
-  credentials: true, // allow cookies/auth headers
+  origin: function (origin, callback) {
+    const allowed = [
+      "http://127.0.0.1:5500",
+      "http://localhost:5500",
+      "https://engelken-course-manager.netlify.app", // ✅ NO trailing slash
+    ];
+
+    // allow requests with no origin (Postman, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    if (allowed.includes(origin)) return callback(null, true);
+
+    return callback(new Error(`CORS blocked origin: ${origin}`), false);
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-auth"], // ✅ include x-auth
+  credentials: false, // you are not using cookies, so keep false
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
+// ✅ ensure preflight always works
+app.options("*", cors(corsOptions));
 
 // Connect to MongoDB
 mongoose
@@ -36,12 +52,8 @@ mongoose
     process.exit(1);
   });
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(bodyParser.json());
-
 // Routes
+
 // Get all courses
 router.get("/courses", authenticateToken, async (req, res) => {
   try {
@@ -72,9 +84,9 @@ router.get("/courses", authenticateToken, async (req, res) => {
   }
 });
 
-// Create new user
+// Create new user (ONLY ONCE)
 router.post("/users", async (req, res) => {
-  if (!req.body.username || !req.body.password || !req.body.role) {
+  if (!req.body || !req.body.username || !req.body.password || !req.body.role) {
     return res
       .status(400)
       .json({ error: "Missing username, password, or role" });
@@ -93,33 +105,7 @@ router.post("/users", async (req, res) => {
     await newUser.save();
     res.sendStatus(201);
   } catch (err) {
-    console.error("User creation error:", err); // <— Add this
-    res
-      .status(500)
-      .json({ error: "Failed to create user", details: err.message });
-  }
-});
-router.post("/users", async (req, res) => {
-  if (!req.body.username || !req.body.password || !req.body.role) {
-    return res
-      .status(400)
-      .json({ error: "Missing username, password, or role" });
-  }
-
-  const allowedRoles = ["student", "teacher"];
-  const role = allowedRoles.includes(req.body.role) ? req.body.role : "student";
-
-  const newUser = new User({
-    username: req.body.username,
-    password: req.body.password,
-    role,
-  });
-
-  try {
-    await newUser.save();
-    res.sendStatus(201);
-  } catch (err) {
-    console.error("User creation error:", err); // <— Add this
+    console.error("User creation error:", err);
     res
       .status(500)
       .json({ error: "Failed to create user", details: err.message });
@@ -128,7 +114,7 @@ router.post("/users", async (req, res) => {
 
 // User login
 router.post("/auth", async (req, res) => {
-  if (!req.body.username || !req.body.password) {
+  if (!req.body || !req.body.username || !req.body.password) {
     return res.status(400).json({ error: "Missing username or password" });
   }
 
@@ -153,7 +139,7 @@ router.post("/auth", async (req, res) => {
   });
 });
 
-// create/update/delete/enroll/drop courses
+// Create course
 router.post(
   "/courses",
   authenticateToken,
