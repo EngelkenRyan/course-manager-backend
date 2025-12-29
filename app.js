@@ -1,10 +1,12 @@
 const express = require("express");
-const Course = require("./models/courses");
-const User = require("./models/user");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
+
+const Course = require("./models/courses");
+const User = require("./models/user");
+const connectDB = require("./db"); // ✅ add this
 
 const { authenticateToken, authorizeTeachersOnly } = require("./models/auth");
 
@@ -13,16 +15,33 @@ const router = express.Router();
 
 const secret = process.env.JWT_SECRET;
 
-app.use(
-  cors({
-    origin: ["http://127.0.0.1:5500", "http://localhost:5500"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-auth"],
-    credentials: true,
-  })
-);
+// ✅ CORS options (more reliable for preflight)
+const allowedOrigins = new Set([
+  "http://127.0.0.1:5500",
+  "http://localhost:5500",
+  "http://localhost:3000",
+]);
+
+const corsOptions = {
+  origin: (origin, cb) => {
+    // allow non-browser requests (no origin) + allowed origins
+    if (!origin || allowedOrigins.has(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "x-auth", "Authorization"],
+  credentials: false,
+  optionsSuccessStatus: 204,
+};
+
+// ✅ IMPORTANT: CORS must be registered BEFORE routes
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
 app.use(express.json());
 app.use(bodyParser.json());
+
+// ---------- ROUTES ----------
 
 // Get all courses
 router.get("/courses", authenticateToken, async (req, res) => {
@@ -67,8 +86,8 @@ router.post("/users", async (req, res) => {
 
   const newUser = new User({
     username: req.body.username,
-    password: req.body.password,
-    role: role,
+    password: req.body.password, // (not secure, but leaving as-is for your project)
+    role,
   });
 
   try {
@@ -76,6 +95,12 @@ router.post("/users", async (req, res) => {
     res.sendStatus(201);
   } catch (err) {
     console.error(err);
+
+    // ✅ if username duplicate, return 409 (helps debugging)
+    if (err.code === 11000) {
+      return res.status(409).json({ error: "Username already exists" });
+    }
+
     res.status(500).json({ error: "Failed to create user" });
   }
 });
@@ -97,10 +122,11 @@ router.post("/auth", async (req, res) => {
     secret,
     { expiresIn: "1h" }
   );
+
   res.json({
     username: user.username,
     role: user.role,
-    token: token,
+    token,
     _id: user._id,
     auth: 1,
   });
@@ -113,12 +139,6 @@ router.post(
   authorizeTeachersOnly,
   async (req, res) => {
     try {
-      if (req.user.role !== "teacher") {
-        return res
-          .status(403)
-          .json({ message: "Only teachers can add courses" });
-      }
-
       const course = new Course({
         ...req.body,
         owner: req.user._id,
@@ -134,12 +154,10 @@ router.post(
 );
 
 // Get course by ID
-router.get("/courses/:id", async (req, res) => {
+router.get("/courses/:id", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
-    if (!course) {
-      return res.status(404).send("Course not found");
-    }
+    if (!course) return res.status(404).send("Course not found");
     res.json(course);
   } catch (err) {
     res.status(400).send(err);
@@ -155,10 +173,7 @@ router.put(
     const course = await Course.findById(req.params.id);
     if (!course) return res.status(404).json({ message: "Course not found" });
 
-    if (
-      req.user.role !== "teacher" ||
-      course.owner.toString() !== req.user._id.toString()
-    ) {
+    if (course.owner.toString() !== req.user._id.toString()) {
       return res
         .status(403)
         .json({ message: "Not authorized to edit this course" });
@@ -179,10 +194,7 @@ router.delete(
     const course = await Course.findById(req.params.id);
     if (!course) return res.status(404).json({ message: "Course not found" });
 
-    if (
-      req.user.role !== "teacher" ||
-      course.owner.toString() !== req.user._id.toString()
-    ) {
+    if (course.owner.toString() !== req.user._id.toString()) {
       return res
         .status(403)
         .json({ message: "Not authorized to delete this course" });
@@ -193,13 +205,11 @@ router.delete(
   }
 );
 
-// Enroll in a course
+// Enroll / Drop
 router.post("/courses/:id/enroll", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
-    if (!course) {
-      return res.status(404).json({ message: "Course not found" });
-    }
+    if (!course) return res.status(404).json({ message: "Course not found" });
 
     if (course.enrolledUsers.includes(req.user._id)) {
       return res
@@ -215,13 +225,10 @@ router.post("/courses/:id/enroll", authenticateToken, async (req, res) => {
   }
 });
 
-// Drop a course
 router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
-    if (!course) {
-      return res.status(404).json({ message: "Course not found" });
-    }
+    if (!course) return res.status(404).json({ message: "Course not found" });
 
     if (!course.enrolledUsers.includes(req.user._id)) {
       return res
@@ -232,6 +239,7 @@ router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
     course.enrolledUsers = course.enrolledUsers.filter(
       (userId) => userId.toString() !== req.user._id.toString()
     );
+
     await course.save();
     res.json({ message: "Successfully dropped the course" });
   } catch (error) {
@@ -240,4 +248,10 @@ router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
 });
 
 app.use("/api", router);
-app.listen(3000, () => console.log("Server running on http://localhost:3000"));
+
+// ✅ Connect DB then start server on Render’s port
+const PORT = process.env.PORT || 3000;
+
+connectDB().then(() => {
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+});
