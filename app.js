@@ -278,10 +278,12 @@ router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
   }
 });
 
+// Use the router
 app.use("/api", router);
 
 const PORT = process.env.PORT || 3000;
 
+// Start server after DB connection
 connectDB()
   .then(() => {
     app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
