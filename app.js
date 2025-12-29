@@ -14,12 +14,18 @@ const router = express.Router();
 const secret = process.env.JWT_SECRET;
 
 // === CORS Setup ===
-app.use(
-  cors({
-    origin: true,
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin: [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "https://engelken-course-manager.netlify.app/",
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], // allowed HTTP methods
+  allowedHeaders: ["Content-Type", "Authorization"], // allowed headers
+  credentials: true, // allow cookies/auth headers
+};
+
+app.use(cors(corsOptions));
 
 // Connect to MongoDB
 mongoose
