@@ -12,30 +12,17 @@ const app = express();
 const router = express.Router();
 const secret = process.env.JWT_SECRET;
 
-// ----- CORS (FIXED) -----
-// IMPORTANT: no trailing slash on netlify origin
 const allowedOrigins = [
   "http://127.0.0.1:5500",
   "http://localhost:5500",
   "https://engelken-course-manager.netlify.app",
 ];
 
-// Allow browser preflight + allow your custom header "x-auth"
 const corsOptions = {
-  origin: (origin, cb) => {
-    // allow Postman / curl (no origin)
-    if (!origin) return cb(null, true);
-
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-
-    // if you want to debug mismatched origins, uncomment:
-    // console.log("Blocked by CORS:", origin);
-
-    return cb(new Error(`CORS blocked origin: ${origin}`), false);
-  },
+  origin: allowedOrigins, // cors package handles the array correctly
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "x-auth"], // <-- THIS FIXES YOUR PREFLIGHT
-  credentials: false, // you are not using cookies
+  allowedHeaders: ["Content-Type", "x-auth"],
+  credentials: false,
   optionsSuccessStatus: 204,
 };
 
