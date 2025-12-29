@@ -13,12 +13,17 @@ const app = express();
 const router = express.Router();
 const secret = process.env.JWT_SECRET;
 
+// === CORS Setup ===
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
+
 // Connect to MongoDB
 mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected!"))
   .catch((err) => {
     console.error("MongoDB connection error:", err);
