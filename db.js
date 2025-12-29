@@ -1,9 +1,14 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
+require("dotenv").config();
 
-const mongoURI = process.env.MONGODB_URI || 'mongodb+srv://rengelken:rengelken2025@coursemanager.ftgihfe.mongodb.net/?retryWrites=true&w=majority&appName=CourseManager';
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log("MongoDB connected!");
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+    process.exit(1); 
+  }
+};
 
-mongoose.connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
-
-module.exports = mongoose;
+module.exports = connectDB;
