@@ -4,10 +4,9 @@ const bodyParser = require("body-parser");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
+const connectDB = require("./db");
 const Course = require("./models/courses");
 const User = require("./models/user");
-const connectDB = require("./db"); // ✅ add this
-
 const { authenticateToken, authorizeTeachersOnly } = require("./models/auth");
 
 const app = express();
@@ -15,7 +14,7 @@ const router = express.Router();
 
 const secret = process.env.JWT_SECRET;
 
-// ✅ CORS options (more reliable for preflight)
+// ---------- CORS (MUST be before routes) ----------
 const allowedOrigins = new Set([
   "http://127.0.0.1:5500",
   "http://localhost:5500",
@@ -24,19 +23,25 @@ const allowedOrigins = new Set([
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // allow non-browser requests (no origin) + allowed origins
+    // allow requests with no origin (curl/postman) + allowed origins
     if (!origin || allowedOrigins.has(origin)) return cb(null, true);
-    return cb(new Error(`CORS blocked for origin: ${origin}`));
+    return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "x-auth", "Authorization"],
-  credentials: false,
   optionsSuccessStatus: 204,
 };
 
-// ✅ IMPORTANT: CORS must be registered BEFORE routes
+// Apply CORS to all requests
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
+
+// Express 5-safe preflight handler (NO wildcard route patterns)
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return cors(corsOptions)(req, res, () => res.sendStatus(204));
+  }
+  next();
+});
 
 app.use(express.json());
 app.use(bodyParser.json());
@@ -47,7 +52,7 @@ app.use(bodyParser.json());
 router.get("/courses", authenticateToken, async (req, res) => {
   try {
     const { enrolled, owner, search } = req.query;
-    let query = {};
+    const query = {};
 
     if (enrolled === "true") {
       query.enrolledUsers = req.user._id;
@@ -68,71 +73,80 @@ router.get("/courses", authenticateToken, async (req, res) => {
     const courses = await Course.find(query);
     res.json(courses);
   } catch (err) {
-    console.error(err);
+    console.error("GET /courses error:", err);
     res.status(500).json({ error: "Failed to fetch courses" });
   }
 });
 
 // Create new user
 router.post("/users", async (req, res) => {
-  if (!req.body.username || !req.body.password || !req.body.role) {
+  const { username, password, role } = req.body || {};
+
+  if (!username || !password || !role) {
     return res
       .status(400)
       .json({ error: "Missing username, password, or role" });
   }
 
   const allowedRoles = ["student", "teacher"];
-  const role = allowedRoles.includes(req.body.role) ? req.body.role : "student";
+  const safeRole = allowedRoles.includes(role) ? role : "student";
 
   const newUser = new User({
-    username: req.body.username,
-    password: req.body.password, // (not secure, but leaving as-is for your project)
-    role,
+    username,
+    password, // NOTE: plaintext is not secure (OK for class project)
+    role: safeRole,
   });
 
   try {
     await newUser.save();
-    res.sendStatus(201);
+    return res.sendStatus(201);
   } catch (err) {
-    console.error(err);
+    console.error("POST /users error:", err);
 
-    // ✅ if username duplicate, return 409 (helps debugging)
-    if (err.code === 11000) {
+    // duplicate username
+    if (err && err.code === 11000) {
       return res.status(409).json({ error: "Username already exists" });
     }
 
-    res.status(500).json({ error: "Failed to create user" });
+    return res.status(500).json({ error: "Failed to create user" });
   }
 });
 
 // User login
 router.post("/auth", async (req, res) => {
-  if (!req.body.username || !req.body.password) {
+  const { username, password } = req.body || {};
+
+  if (!username || !password) {
     return res.status(400).json({ error: "Missing username or password" });
   }
 
-  let user = await User.findOne({ username: req.body.username });
+  try {
+    const user = await User.findOne({ username });
 
-  if (!user || user.password !== req.body.password) {
-    return res.status(401).json({ error: "Invalid username or password" });
+    if (!user || user.password !== password) {
+      return res.status(401).json({ error: "Invalid username or password" });
+    }
+
+    const token = jwt.sign(
+      { _id: user._id.toString(), username: user.username, role: user.role },
+      secret,
+      { expiresIn: "1h" }
+    );
+
+    return res.json({
+      username: user.username,
+      role: user.role,
+      token,
+      _id: user._id,
+      auth: 1,
+    });
+  } catch (err) {
+    console.error("POST /auth error:", err);
+    return res.status(500).json({ error: "Login failed" });
   }
-
-  const token = jwt.sign(
-    { _id: user._id.toString(), username: user.username, role: user.role },
-    secret,
-    { expiresIn: "1h" }
-  );
-
-  res.json({
-    username: user.username,
-    role: user.role,
-    token,
-    _id: user._id,
-    auth: 1,
-  });
 });
 
-// Create course
+// Create course (teachers only)
 router.post(
   "/courses",
   authenticateToken,
@@ -146,9 +160,10 @@ router.post(
       });
 
       await course.save();
-      res.status(201).json(course);
+      return res.status(201).json(course);
     } catch (error) {
-      res.status(400).json({ message: error.message });
+      console.error("POST /courses error:", error);
+      return res.status(400).json({ message: error.message });
     }
   }
 );
@@ -158,58 +173,71 @@ router.get("/courses/:id", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
     if (!course) return res.status(404).send("Course not found");
-    res.json(course);
+    return res.json(course);
   } catch (err) {
-    res.status(400).send(err);
+    console.error("GET /courses/:id error:", err);
+    return res.status(400).send(err);
   }
 });
 
-// Update course
+// Update course (teacher + owner)
 router.put(
   "/courses/:id",
   authenticateToken,
   authorizeTeachersOnly,
   async (req, res) => {
-    const course = await Course.findById(req.params.id);
-    if (!course) return res.status(404).json({ message: "Course not found" });
+    try {
+      const course = await Course.findById(req.params.id);
+      if (!course) return res.status(404).json({ message: "Course not found" });
 
-    if (course.owner.toString() !== req.user._id.toString()) {
-      return res
-        .status(403)
-        .json({ message: "Not authorized to edit this course" });
+      if (course.owner.toString() !== req.user._id.toString()) {
+        return res
+          .status(403)
+          .json({ message: "Not authorized to edit this course" });
+      }
+
+      Object.assign(course, req.body);
+      await course.save();
+      return res.json(course);
+    } catch (err) {
+      console.error("PUT /courses/:id error:", err);
+      return res.status(400).json({ message: err.message || "Update failed" });
     }
-
-    Object.assign(course, req.body);
-    await course.save();
-    res.json(course);
   }
 );
 
-// Delete course
+// Delete course (teacher + owner)
 router.delete(
   "/courses/:id",
   authenticateToken,
   authorizeTeachersOnly,
   async (req, res) => {
-    const course = await Course.findById(req.params.id);
-    if (!course) return res.status(404).json({ message: "Course not found" });
+    try {
+      const course = await Course.findById(req.params.id);
+      if (!course) return res.status(404).json({ message: "Course not found" });
 
-    if (course.owner.toString() !== req.user._id.toString()) {
-      return res
-        .status(403)
-        .json({ message: "Not authorized to delete this course" });
+      if (course.owner.toString() !== req.user._id.toString()) {
+        return res
+          .status(403)
+          .json({ message: "Not authorized to delete this course" });
+      }
+
+      await course.deleteOne();
+      return res.json({ message: "Course deleted" });
+    } catch (err) {
+      console.error("DELETE /courses/:id error:", err);
+      return res.status(400).json({ message: err.message || "Delete failed" });
     }
-
-    await course.deleteOne();
-    res.json({ message: "Course deleted" });
   }
 );
 
-// Enroll / Drop
+// Enroll in a course
 router.post("/courses/:id/enroll", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
-    if (!course) return res.status(404).json({ message: "Course not found" });
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     if (course.enrolledUsers.includes(req.user._id)) {
       return res
@@ -219,16 +247,20 @@ router.post("/courses/:id/enroll", authenticateToken, async (req, res) => {
 
     course.enrolledUsers.push(req.user._id);
     await course.save();
-    res.json({ message: "Successfully enrolled in course" });
+    return res.json({ message: "Successfully enrolled in course" });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error("POST /courses/:id/enroll error:", error);
+    return res.status(400).json({ message: error.message });
   }
 });
 
+// Drop a course
 router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
   try {
     const course = await Course.findById(req.params.id);
-    if (!course) return res.status(404).json({ message: "Course not found" });
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     if (!course.enrolledUsers.includes(req.user._id)) {
       return res
@@ -241,17 +273,23 @@ router.post("/courses/:id/drop", authenticateToken, async (req, res) => {
     );
 
     await course.save();
-    res.json({ message: "Successfully dropped the course" });
+    return res.json({ message: "Successfully dropped the course" });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error("POST /courses/:id/drop error:", error);
+    return res.status(400).json({ message: error.message });
   }
 });
 
 app.use("/api", router);
 
-// ✅ Connect DB then start server on Render’s port
+// ---------- START ----------
 const PORT = process.env.PORT || 3000;
 
-connectDB().then(() => {
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-});
+connectDB()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error("MongoDB connection failed:", err);
+    process.exit(1);
+  });
